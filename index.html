@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pi Toss Game – Try Your Luck!</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family:'Segoe UI',Arial,sans-serif; background:linear-gradient(135deg,#fedb83,#c6b8f8);}
+    .container{ ... } /* Paste styles from previous answers here (see above) */
+  </style>
+  <script src="https://sdk.minepi.com/pi-sdk.js"></script>
+</head>
+<body>
+<div class="container" id="main-screen">
+  <h1>Pi Toss Game</h1>
+  <div class="headline">TRY YOUR LUCK FOR EACH DAY!<br>WIN OR LOSS, HOPE DAY IS YOURS.</div>
+  <div class="rules-card">
+    <h3>Game Rules &amp; Fees</h3>
+    <ul>
+      <li>✔️ Bet any amount from <b>1 Pi</b> to <b>100 Pi</b> (or enter custom)</li>
+      <li>✔️ <b>Both players must be KYC'd &amp; have Pi Mainnet balance</b></li>
+      <li>✔️ <b>Developer fee:</b> 11% of total Pi pool is charged each game</li>
+      <li>✔️ <b>Transaction fee:</b> shown before you play (both pay, per Pi mainnet)</li>
+      <li>✔️ <b>Winnings:</b> You'll see your exact payout before every game!</li>
+    </ul>
+  </div>
+  <button class="mainbtn" id="startGameBtn">Start Playing</button>
+</div>
+<script>
+// Replace below!
+const API = "https://your-backend-url.onrender.com";
+let piUser = null, kycStatus = false, userGender = "other";
+
+document.getElementById("startGameBtn").onclick = async () => {
+  document.getElementById("main-screen").innerHTML = `<div class='center'><b>Authenticating with Pi...</b></div>`;
+  window.Pi.authenticate({scope:["username","payment","profile"]}, user => {
+    if (!user || !user.username) return showError("Authentication failed");
+    piUser = user;
+    kycStatus = user.kycApproved;
+    userGender = user.profile && user.profile.gender ? user.profile.gender : "other";
+    showLobby();
+  }, err => showError("Pi Network authentication failed: "+err));
+};
+function getGenderAvatar(genderStr) {
+    if (!genderStr) return "🧑";
+    genderStr = genderStr.toLowerCase();
+    if (genderStr.startsWith("m")) return "👨";
+    if (genderStr.startsWith("f")) return "👩";
+    return "🧑";
+}
+function showError(msg) {
+  document.body.innerHTML = `<div class="container"><div class="error">${msg}</div></div>`;
+}
+function showLobby() {
+  document.body.innerHTML = `<div class="container">
+    <div class="user-info center">
+      <span class="avatar">${getGenderAvatar(userGender)}</span>
+      <span class="pi-username">${piUser.username}</span>
+      <span class="kyc-badge">${kycStatus ? "✔️ KYC Verified":"❌ Not KYC'ed"}</span>
+      <div id="balanceMsg"></div>
+    </div>
+    <form class="game-form" id="bet-form" autocomplete="off">
+      <label>Enter Pi to Bet (1-100):</label>
+      <input type="number" min="1" max="100" step="1" id="bet-pi" required>
+      <label>Or Enter Custom Pi Amount (min 0.01):</label>
+      <input type="number" step="0.01" min="0.01" id="bet-custom">
+      <div class="warning" id="fee-warning" style="display:none;"></div>
+      <div class="payout" id="payout-amount" style="display:none;"></div>
+      <button type="button" class="mainbtn" id="paybtn">Pay & Enter Game</button>
+    </form>
+    <div class="tables-wrapper">
+      <h3>Live Tables</h3>
+      <div id="tables-list"></div>
+    </div>
+  </div>`;
+  fetchTables(); setInterval(fetchTables, 4000);
+  document.getElementById("bet-pi").oninput = document.getElementById("bet-custom").oninput = updateFeeDisplay;
+  document.getElementById("paybtn").onclick = payAndJoinGame;
+}
+function updateFeeDisplay() {
+  let bet = parseFloat(document.getElementById("bet-pi").value) || parseFloat(document.getElementById("bet-custom").value) || 0;
+  if (bet < 1) {document.getElementById("fee-warning").style.display = "none";document.getElementById("payout-amount").style.display = "none";return;}
+  let devFee = bet * 2 * 0.11, txFee = 0.01 * 2, payout = (bet * 2) - devFee - txFee;
+  document.getElementById("fee-warning").style.display = "block";
+  document.getElementById("fee-warning").innerText = `Developer Fee: ${devFee.toFixed(2)} Pi. Transaction Fees: ${txFee.toFixed(2)} Pi (both).`;
+  document.getElementById("payout-amount").style.display = "block";
+  document.getElementById("payout-amount").innerText = `If you WIN, you'll receive about: ${payout.toFixed(2)} Pi.`;
+}
+async function payAndJoinGame() {
+  if (!kycStatus) return showError("KYC Required to play.");
+  let bet = parseFloat(document.getElementById("bet-pi").value) || parseFloat(document.getElementById("bet-custom").value) || 0;
+  let devFee = bet * 0.11 * 2, txFee = 0.01 * 2, total = bet + devFee / 2 + txFee / 2;
+  if (bet < 1) return showError("Bet must be at least 1 Pi.");
+  window.Pi.createPayment({
+    amount: total.toFixed(3) + "",
+    memo: "Pi Toss Entry (bet + dev fee + tx)",
+    metadata: {bet, devFee, txFee, username: piUser.username, gender: userGender}
+  }, {
+    onReadyForServerCompletion: async function(paymentId, txId) {
+      let resp = await fetch(`${API}/api/payment_complete`, {
+        method: "POST",
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: piUser.username,
+          gender: userGender,
+          payment_id: paymentId,
+          bet_amount: bet,
+          dev_fee: devFee,
+          tx_fee: txFee,
+        })
+      });
+      let data = await resp.json();
+      if (data.success) {alert("You are in the game! Table ID: "+data.table.id);fetchTables();}
+      else showError("Payment success but game entry error: "+(data.detail||"Problem occurred"));
+    },
+    onCancel: function() { showError("Payment cancelled."); },
+    onError: function(err) { showError("Payment error: " + err.message); }
+  });
+}
+function fetchTables(){
+  fetch(`${API}/api/open_tables`).then(r=>r.json()).then(d=>{
+    let rows = d.tables?.map(t=>`<tr>
+      <td>${t.id}</td>
+      <td>${getGenderAvatar(t.creator_gender)} ${t.creator}</td>
+      <td>${t.bet_amount}</td>
+      <td>${t.status}</td>
+      <td>${t.players.join(", ")}</td>
+      <td>${t.winner||"-"}</td>
+    </tr>`).join("");
+    document.getElementById("tables-list").innerHTML =
+      `<table><tr><th>ID</th><th>Creator</th><th>Bet</th><th>Status</th><th>Players</th><th>Winner</th></tr>${rows||""}</table>`;
+  });
+}
+</script>
+</body>
+</html>
